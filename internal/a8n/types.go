@@ -26,6 +26,13 @@ func IsRepoSupported(spec *api.ExternalRepoSpec) bool {
 	return ok
 }
 
+// CampaignPlanPatch is a patch applied to a repository (to create a new branch).
+type CampaignPlanPatch struct {
+	Repo         api.RepoID
+	BaseRevision string
+	Patch        string
+}
+
 // A CampaignPlan represents the application of a CampaignType to the Arguments
 // over multiple repositories.
 type CampaignPlan struct {
@@ -35,6 +42,8 @@ type CampaignPlan struct {
 
 	// Arguments is a JSONC string
 	Arguments string
+
+	CanceledAt time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -86,6 +95,8 @@ type Campaign struct {
 	UpdatedAt       time.Time
 	ChangesetIDs    []int64
 	CampaignPlanID  int64
+	ClosedAt        time.Time
+	PublishedAt     time.Time
 }
 
 // Clone returns a clone of a Campaign.
@@ -100,9 +111,10 @@ type ChangesetState string
 
 // ChangesetState constants.
 const (
-	ChangesetStateOpen   ChangesetState = "OPEN"
-	ChangesetStateClosed ChangesetState = "CLOSED"
-	ChangesetStateMerged ChangesetState = "MERGED"
+	ChangesetStateOpen    ChangesetState = "OPEN"
+	ChangesetStateClosed  ChangesetState = "CLOSED"
+	ChangesetStateMerged  ChangesetState = "MERGED"
+	ChangesetStateDeleted ChangesetState = "DELETED"
 )
 
 // Valid returns true if the given Changeset is valid.
@@ -110,7 +122,8 @@ func (s ChangesetState) Valid() bool {
 	switch s {
 	case ChangesetStateOpen,
 		ChangesetStateClosed,
-		ChangesetStateMerged:
+		ChangesetStateMerged,
+		ChangesetStateDeleted:
 		return true
 	default:
 		return false
@@ -119,6 +132,7 @@ func (s ChangesetState) Valid() bool {
 
 // BackgroundProcessStatus defines the status of a background process.
 type BackgroundProcessStatus struct {
+	Canceled      bool
 	Total         int32
 	Completed     int32
 	Pending       int32
@@ -130,6 +144,13 @@ func (b BackgroundProcessStatus) CompletedCount() int32         { return b.Compl
 func (b BackgroundProcessStatus) PendingCount() int32           { return b.Pending }
 func (b BackgroundProcessStatus) State() BackgroundProcessState { return b.ProcessState }
 func (b BackgroundProcessStatus) Errors() []string              { return b.ProcessErrors }
+func (b BackgroundProcessStatus) Finished() bool {
+	if b.ProcessState == BackgroundProcessStateCompleted ||
+		b.ProcessState == BackgroundProcessStateErrored {
+		return true
+	}
+	return false
+}
 
 // BackgroundProcessState defines the possible states of a background process.
 type BackgroundProcessState string
@@ -139,6 +160,7 @@ const (
 	BackgroundProcessStateProcessing BackgroundProcessState = "PROCESSING"
 	BackgroundProcessStateErrored    BackgroundProcessState = "ERRORED"
 	BackgroundProcessStateCompleted  BackgroundProcessState = "COMPLETED"
+	BackgroundProcessStateCanceled   BackgroundProcessState = "CANCELED"
 )
 
 // ChangesetReviewState defines the possible states of a Changeset's review.
@@ -190,6 +212,11 @@ func (c *ChangesetJob) Clone() *ChangesetJob {
 	return &cc
 }
 
+// SuccessfullyCompleted returns true for jobs that have already succesfully run
+func (c *ChangesetJob) SuccessfullyCompleted() bool {
+	return c.Error == "" && !c.FinishedAt.IsZero() && c.ChangesetID != 0
+}
+
 // A Changeset is a changeset on a code host belonging to a Repository and many
 // Campaigns.
 type Changeset struct {
@@ -201,18 +228,29 @@ type Changeset struct {
 	CampaignIDs         []int64
 	ExternalID          string
 	ExternalServiceType string
+	ExternalDeletedAt   time.Time
 }
 
 // Clone returns a clone of a Changeset.
-func (t *Changeset) Clone() *Changeset {
-	tt := *t
-	tt.CampaignIDs = t.CampaignIDs[:len(t.CampaignIDs):len(t.CampaignIDs)]
+func (c *Changeset) Clone() *Changeset {
+	tt := *c
+	tt.CampaignIDs = c.CampaignIDs[:len(c.CampaignIDs):len(c.CampaignIDs)]
 	return &tt
 }
 
+// RemoveCampaignID removes the given id from the Changesets CampaignIDs slice.
+// If the id is not in CampaignIDs calling this method doesn't have an effect.
+func (c *Changeset) RemoveCampaignID(id int64) {
+	for i := len(c.CampaignIDs) - 1; i >= 0; i-- {
+		if c.CampaignIDs[i] == id {
+			c.CampaignIDs = append(c.CampaignIDs[:i], c.CampaignIDs[i+1:]...)
+		}
+	}
+}
+
 // Title of the Changeset.
-func (t *Changeset) Title() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) Title() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.Title, nil
 	case *bitbucketserver.PullRequest:
@@ -225,8 +263,8 @@ func (t *Changeset) Title() (string, error) {
 // ExternalCreatedAt is when the Changeset was created on the codehost. When it
 // cannot be determined when the changeset was created, a zero-value timestamp
 // is returned.
-func (t *Changeset) ExternalCreatedAt() time.Time {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) ExternalCreatedAt() time.Time {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.CreatedAt
 	case *bitbucketserver.PullRequest:
@@ -237,8 +275,8 @@ func (t *Changeset) ExternalCreatedAt() time.Time {
 }
 
 // Body of the Changeset.
-func (t *Changeset) Body() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) Body() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.Body, nil
 	case *bitbucketserver.PullRequest:
@@ -248,13 +286,33 @@ func (t *Changeset) Body() (string, error) {
 	}
 }
 
+// SetDeleted sets the internal state of a Changeset so that its State is
+// ChangesetStateDeleted.
+func (c *Changeset) SetDeleted() {
+	c.ExternalDeletedAt = time.Now().UTC().Truncate(time.Microsecond)
+}
+
+// IsDeleted returns true when the Changeset's ExternalDeletedAt is a non-zero
+// timestamp.
+func (c *Changeset) IsDeleted() bool {
+	return !c.ExternalDeletedAt.IsZero()
+}
+
 // State of a Changeset.
-func (t *Changeset) State() (s ChangesetState, err error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) State() (s ChangesetState, err error) {
+	if !c.ExternalDeletedAt.IsZero() {
+		return ChangesetStateDeleted, nil
+	}
+
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		s = ChangesetState(m.State)
 	case *bitbucketserver.PullRequest:
-		s = ChangesetState(m.State)
+		if m.State == "DECLINED" {
+			s = ChangesetStateClosed
+		} else {
+			s = ChangesetState(m.State)
+		}
 	default:
 		return "", errors.New("unknown changeset type")
 	}
@@ -267,8 +325,8 @@ func (t *Changeset) State() (s ChangesetState, err error) {
 }
 
 // URL of a Changeset.
-func (t *Changeset) URL() (s string, err error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) URL() (s string, err error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.URL, nil
 	case *bitbucketserver.PullRequest:
@@ -283,10 +341,10 @@ func (t *Changeset) URL() (s string, err error) {
 }
 
 // ReviewState of a Changeset.
-func (t *Changeset) ReviewState() (s ChangesetReviewState, err error) {
+func (c *Changeset) ReviewState() (s ChangesetReviewState, err error) {
 	states := map[ChangesetReviewState]bool{}
 
-	switch m := t.Metadata.(type) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		for _, ti := range m.TimelineItems {
 			if r, ok := ti.Item.(*github.PullRequestReview); ok {
@@ -312,12 +370,12 @@ func (t *Changeset) ReviewState() (s ChangesetReviewState, err error) {
 }
 
 // Events returns the list of ChangesetEvents from the Changeset's metadata.
-func (t *Changeset) Events() (events []*ChangesetEvent) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) Events() (events []*ChangesetEvent) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		events = make([]*ChangesetEvent, 0, len(m.TimelineItems))
 		for _, ti := range m.TimelineItems {
-			ev := ChangesetEvent{ChangesetID: t.ID}
+			ev := ChangesetEvent{ChangesetID: c.ID}
 
 			switch e := ti.Item.(type) {
 			case *github.PullRequestReviewThread:
@@ -340,7 +398,7 @@ func (t *Changeset) Events() (events []*ChangesetEvent) {
 		events = make([]*ChangesetEvent, 0, len(m.Activities))
 		for _, a := range m.Activities {
 			events = append(events, &ChangesetEvent{
-				ChangesetID: t.ID,
+				ChangesetID: c.ID,
 				Key:         a.Key(),
 				Kind:        ChangesetEventKindFor(&a),
 				Metadata:    a,
@@ -353,8 +411,8 @@ func (t *Changeset) Events() (events []*ChangesetEvent) {
 // HeadRefOid returns the git ObjectID of the HEAD reference associated with
 // Changeset on the codehost. If the codehost doesn't include the ObjectID, an
 // empty string is returned.
-func (t *Changeset) HeadRefOid() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) HeadRefOid() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.HeadRefOid, nil
 	case *bitbucketserver.PullRequest:
@@ -366,8 +424,8 @@ func (t *Changeset) HeadRefOid() (string, error) {
 
 // HeadRef returns the full ref (e.g. `refs/heads/my-branch`) of the
 // HEAD reference associated with the Changeset on the codehost.
-func (t *Changeset) HeadRef() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) HeadRef() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return "refs/heads/" + m.HeadRefName, nil
 	case *bitbucketserver.PullRequest:
@@ -380,8 +438,8 @@ func (t *Changeset) HeadRef() (string, error) {
 // BaseRefOid returns the git ObjectID of the base reference associated with the
 // Changeset on the codehost. If the codehost doesn't include the ObjectID, an
 // empty string is returned.
-func (t *Changeset) BaseRefOid() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) BaseRefOid() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return m.BaseRefOid, nil
 	case *bitbucketserver.PullRequest:
@@ -393,8 +451,8 @@ func (t *Changeset) BaseRefOid() (string, error) {
 
 // BaseRef returns the full ref (e.g. `refs/heads/my-branch`) of the base ref
 // associated with the Changeset on the codehost.
-func (t *Changeset) BaseRef() (string, error) {
-	switch m := t.Metadata.(type) {
+func (c *Changeset) BaseRef() (string, error) {
+	switch m := c.Metadata.(type) {
 	case *github.PullRequest:
 		return "refs/heads/" + m.BaseRefName, nil
 	case *bitbucketserver.PullRequest:

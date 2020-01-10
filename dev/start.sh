@@ -75,7 +75,9 @@ export WEBPACK_DEV_SERVER=1
 
 export CRITICAL_CONFIG_FILE=${CRITICAL_CONFIG_FILE:-./dev/critical-config.json}
 export SITE_CONFIG_FILE=${SITE_CONFIG_FILE:-./dev/site-config.json}
+export GLOBAL_SETTINGS_FILE=${GLOBAL_SETTINGS_FILE:-./dev/global-settings.json}
 export SITE_CONFIG_ALLOW_EDITS=true
+export GLOBAL_SETTINGS_ALLOW_EDITS=true
 
 # WebApp
 export NODE_ENV=development
@@ -107,11 +109,6 @@ type ulimit > /dev/null && ulimit -n 10000 || true
 
 # Put .bin:node_modules/.bin onto the $PATH
 export PATH="$PWD/.bin:$PWD/node_modules/.bin:$PATH"
-
-# Management console webapp
-[ -n "${OFFLINE-}" ] || {
-    pushd ./cmd/management-console/web && yarn --no-progress && popd
-}
 
 # LSIF server
 [ -n "${OFFLINE-}" ] || {

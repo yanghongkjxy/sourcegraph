@@ -4,13 +4,12 @@ import { isEqual } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import FileIcon from 'mdi-react/FileIcon'
 import SearchIcon from 'mdi-react/SearchIcon'
-import TimerSandIcon from 'mdi-react/TimerSandIcon'
 import SourceRepositoryIcon from 'mdi-react/SourceRepositoryIcon'
 import * as React from 'react'
 import { Link } from 'react-router-dom'
 import { Observable, Subject, Subscription } from 'rxjs'
 import { debounceTime, distinctUntilChanged, filter, first, map, skip, skipUntil } from 'rxjs/operators'
-import { parseSearchURLQuery, PatternTypeProps } from '..'
+import { parseSearchURLQuery, PatternTypeProps, InteractiveSearchProps } from '..'
 import { FetchFileCtx } from '../../../../shared/src/components/CodeExcerpt'
 import { FileMatch } from '../../../../shared/src/components/FileMatch'
 import { displayRepoName } from '../../../../shared/src/components/RepoFileLink'
@@ -40,7 +39,8 @@ export interface SearchResultsListProps
         TelemetryProps,
         SettingsCascadeProps,
         ThemeProps,
-        PatternTypeProps {
+        PatternTypeProps,
+        InteractiveSearchProps {
     location: H.Location
     history: H.History
     authenticatedUser: GQL.IUser | null
@@ -61,6 +61,8 @@ export interface SearchResultsListProps
     onDidCreateSavedQuery: () => void
     onSaveQueryClick: () => void
     didSave: boolean
+
+    interactiveSearchMode: boolean
 
     fetchHighlightedFileLines: (ctx: FetchFileCtx, force?: boolean) => Observable<string[]>
 }
@@ -302,7 +304,7 @@ export class SearchResultsList extends React.PureComponent<SearchResultsListProp
     }
 
     public render(): React.ReactNode {
-        const parsedQuery = parseSearchURLQuery(this.props.location.search)
+        const parsedQuery = parseSearchURLQuery(this.props.location.search, this.props.interactiveSearchMode)
 
         return (
             <>
@@ -400,7 +402,7 @@ export class SearchResultsList extends React.PureComponent<SearchResultsListProp
                                     )}
 
                                     {/* Server-provided help message */}
-                                    {results.alert ? (
+                                    {results.alert && (
                                         <div className="alert alert-info m-2">
                                             <h3>
                                                 <AlertCircleIcon className="icon-inline" /> {results.alert.title}
@@ -418,7 +420,8 @@ export class SearchResultsList extends React.PureComponent<SearchResultsListProp
                                                                         '/search?' +
                                                                         buildSearchURLQuery(
                                                                             proposedQuery.query,
-                                                                            this.props.patternType
+                                                                            this.props.patternType,
+                                                                            this.props.filtersInQuery
                                                                         )
                                                                     }
                                                                 >
@@ -432,22 +435,10 @@ export class SearchResultsList extends React.PureComponent<SearchResultsListProp
                                                     </ul>
                                                 </>
                                             )}{' '}
-                                        </div>
-                                    ) : (
-                                        results.results.length === 0 &&
-                                        (results.timedout.length > 0 ? (
-                                            /* No results, but timeout hit */
-                                            <div className="alert alert-warning m-2">
-                                                <h3>
-                                                    <TimerSandIcon className="icon-inline" /> Search timed out
-                                                </h3>
-                                                {this.renderRecommendations([
-                                                    <>
-                                                        Try narrowing your query, or specifying a longer "timeout:" in
-                                                        your query.
-                                                    </>,
-                                                    /* If running on non-cluster, give some smart advice */
-                                                    ...(!this.props.isSourcegraphDotCom &&
+                                            {results.timedout.length > 0 &&
+                                                results.timedout.length === results.repositoriesCount &&
+                                                /* All repositories timed out. */
+                                                this.renderRecommendations(
                                                     window.context.deployType !== 'cluster'
                                                         ? [
                                                               <>
@@ -456,20 +447,19 @@ export class SearchResultsList extends React.PureComponent<SearchResultsListProp
                                                               </>,
                                                               window.context.likelyDockerOnMac
                                                                   ? 'Use Docker Machine instead of Docker for Mac for better performance on macOS.'
-                                                                  : 'Run Sourcegraph on a server with more CPU and memory, or faster disk IO.',
+                                                                  : 'Contact your Sourcegraph administrator if you are seeing timeouts regularly, as more CPU, memory, or disk resources may need to be provisioned.',
                                                           ]
-                                                        : []),
-                                                ])}
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div className="alert alert-info d-flex m-2">
-                                                    <h3 className="m-0">
-                                                        <SearchIcon className="icon-inline" /> No results
-                                                    </h3>
-                                                </div>
-                                            </>
-                                        ))
+                                                        : []
+                                                )}
+                                        </div>
+                                    )}
+
+                                    {results.matchCount === 0 && !results.alert && (
+                                        <div className="alert alert-info d-flex m-2">
+                                            <h3 className="m-0">
+                                                <SearchIcon className="icon-inline" /> No results
+                                            </h3>
+                                        </div>
                                     )}
                                 </>
                             )

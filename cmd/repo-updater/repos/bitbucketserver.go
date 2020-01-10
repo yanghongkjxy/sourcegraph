@@ -120,7 +120,15 @@ func (s BitbucketServerSource) CreateChangeset(ctx context.Context, c *Changeset
 
 	err := s.client.CreatePullRequest(ctx, pr)
 	if err != nil {
-		return err
+		if ae, ok := err.(*bitbucketserver.ErrAlreadyExists); ok && ae != nil {
+			if ae.Existing == nil {
+				return fmt.Errorf("existing PR is nil")
+			}
+			log15.Info("Existing PR extracted", "ID", ae.Existing.ID)
+			pr = ae.Existing
+		} else {
+			return err
+		}
 	}
 
 	c.Changeset.Metadata = pr
@@ -130,8 +138,28 @@ func (s BitbucketServerSource) CreateChangeset(ctx context.Context, c *Changeset
 	return nil
 }
 
+// CloseChangeset closes the given *Changeset on the code host and updates the
+// Metadata column in the *a8n.Changeset to the newly closed pull request.
+func (s BitbucketServerSource) CloseChangeset(ctx context.Context, c *Changeset) error {
+	pr, ok := c.Changeset.Metadata.(*bitbucketserver.PullRequest)
+	if !ok {
+		return errors.New("Changeset is not a Bitbucket Server pull request")
+	}
+
+	err := s.client.DeclinePullRequest(ctx, pr)
+	if err != nil {
+		return err
+	}
+
+	c.Changeset.Metadata = pr
+
+	return nil
+}
+
 // LoadChangesets loads the latest state of the given Changesets from the codehost.
 func (s BitbucketServerSource) LoadChangesets(ctx context.Context, cs ...*Changeset) error {
+	var notFound []*Changeset
+
 	for i := range cs {
 		repo := cs[i].Repo.Metadata.(*bitbucketserver.Repo)
 		number, err := strconv.Atoi(cs[i].ExternalID)
@@ -145,6 +173,14 @@ func (s BitbucketServerSource) LoadChangesets(ctx context.Context, cs ...*Change
 
 		err = s.client.LoadPullRequest(ctx, pr)
 		if err != nil {
+			if bitbucketserver.IsNotFound(err) {
+				notFound = append(notFound, cs[i])
+				if cs[i].Changeset.Metadata == nil {
+					cs[i].Changeset.Metadata = pr
+				}
+				continue
+			}
+
 			return err
 		}
 
@@ -156,6 +192,10 @@ func (s BitbucketServerSource) LoadChangesets(ctx context.Context, cs ...*Change
 		cs[i].Changeset.Metadata = pr
 	}
 
+	if len(notFound) > 0 {
+		return ChangesetsNotFoundError{Changesets: notFound}
+	}
+
 	return nil
 }
 
@@ -164,7 +204,7 @@ func (s BitbucketServerSource) ExternalServices() ExternalServices {
 	return ExternalServices{s.svc}
 }
 
-func (s BitbucketServerSource) makeRepo(repo *bitbucketserver.Repo) *Repo {
+func (s BitbucketServerSource) makeRepo(repo *bitbucketserver.Repo, isArchived bool) *Repo {
 	host, err := url.Parse(s.config.Url)
 	if err != nil {
 		// This should never happen
@@ -233,6 +273,7 @@ func (s BitbucketServerSource) makeRepo(repo *bitbucketserver.Repo) *Repo {
 		},
 		Description: repo.Name,
 		Fork:        repo.Origin != nil,
+		Archived:    isArchived,
 		Enabled:     true,
 		Sources: map[string]*SourceInfo{
 			urn: {
@@ -265,6 +306,16 @@ func (s *BitbucketServerSource) excludes(r *bitbucketserver.Repo) bool {
 }
 
 func (s *BitbucketServerSource) listAllRepos(ctx context.Context, results chan SourceResult) {
+	// "archived" label is a convention used at some customers for indicating
+	// a repository is archived (like github's archived state). This is not
+	// returned in the normal repository listing endpoints, so we need to
+	// fetch it seperately.
+	archived, err := s.listAllLabeledRepos(ctx, "archived")
+	if err != nil {
+		results <- SourceResult{Source: s, Err: errors.Wrap(err, "failed to list repos with archived label")}
+		return
+	}
+
 	type batch struct {
 		repos []*bitbucketserver.Repo
 		err   error
@@ -344,10 +395,33 @@ func (s *BitbucketServerSource) listAllRepos(ctx context.Context, results chan S
 
 		for _, repo := range r.repos {
 			if !seen[repo.ID] && !s.excludes(repo) {
-				results <- SourceResult{Source: s, Repo: s.makeRepo(repo)}
+				_, isArchived := archived[repo.ID]
+				results <- SourceResult{Source: s, Repo: s.makeRepo(repo, isArchived)}
 				seen[repo.ID] = true
 			}
 		}
 
 	}
+}
+
+func (s *BitbucketServerSource) listAllLabeledRepos(ctx context.Context, label string) (map[int]struct{}, error) {
+	ids := map[int]struct{}{}
+	next := &bitbucketserver.PageToken{Limit: 1000}
+	for next.HasMore() {
+		repos, page, err := s.client.LabeledRepos(ctx, next, label)
+		if err != nil {
+			if bitbucketserver.IsNoSuchLabel(err) {
+				// treat as empty
+				return ids, nil
+			}
+			return nil, err
+		}
+
+		for _, r := range repos {
+			ids[r.ID] = struct{}{}
+		}
+
+		next = page
+	}
+	return ids, nil
 }

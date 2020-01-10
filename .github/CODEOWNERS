@@ -239,10 +239,6 @@ README.md @sqs
 /internal/store/ @keegancsmith
 /internal/metrics @keegancsmith @slimsag
 
-# Management console
-/cmd/management-console @slimsag
-/enterprise/cmd/management-console @slimsag
-
 # Code discussions
 **/*discussion* @slimsag
 /web/src/discussions @slimsag
@@ -283,3 +279,6 @@ README.md @sqs
 /go.sum @sourcegraph/core-services
 /go.mod @sourcegraph/core-services
 /CHANGELOG.md
+
+/.tool-versions @sourcegraph/distribution
+/.nvmrc @sourcegraph/web

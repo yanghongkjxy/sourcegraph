@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/gomodule/oauth1/oauth"
 	"github.com/opentracing-contrib/go-stdlib/nethttp"
 	opentracing "github.com/opentracing/opentracing-go"
@@ -386,7 +387,13 @@ func (c *Client) LoadPullRequest(ctx context.Context, pr *PullRequest) error {
 
 // ErrAlreadyExists is returned by Client.CreatePullRequest when a Pull Request
 // for the given FromRef and ToRef already exists.
-var ErrAlreadyExists = errors.New("A pull request with the given to and from refs already exists")
+type ErrAlreadyExists struct {
+	Existing *PullRequest
+}
+
+func (e ErrAlreadyExists) Error() string {
+	return "A pull request with the given to and from refs already exists"
+}
 
 // CreatePullRequest creates the given PullRequest returning an error in case of failure.
 func (c *Client) CreatePullRequest(ctx context.Context, pr *PullRequest) error {
@@ -444,11 +451,39 @@ func (c *Client) CreatePullRequest(ctx context.Context, pr *PullRequest) error {
 	err := c.send(ctx, "POST", path, nil, payload, pr)
 	if err != nil {
 		if IsDuplicatePullRequest(err) {
-			return ErrAlreadyExists
+			pr, extractErr := ExtractDuplicatePullRequest(err)
+			if extractErr != nil {
+				log15.Error("Extracting existsing PR", "err", extractErr)
+			}
+			return &ErrAlreadyExists{
+				Existing: pr,
+			}
 		}
 		return err
 	}
 	return nil
+}
+
+// DeclinePullRequest declines and closes the given PullRequest, returning an error in case of failure.
+func (c *Client) DeclinePullRequest(ctx context.Context, pr *PullRequest) error {
+	if pr.ToRef.Repository.Slug == "" {
+		return errors.New("repository slug empty")
+	}
+
+	if pr.ToRef.Repository.Project.Key == "" {
+		return errors.New("project key empty")
+	}
+
+	path := fmt.Sprintf(
+		"rest/api/1.0/projects/%s/repos/%s/pull-requests/%d/decline",
+		pr.ToRef.Repository.Project.Key,
+		pr.ToRef.Repository.Slug,
+		pr.ID,
+	)
+
+	qry := url.Values{"version": {strconv.Itoa(pr.Version)}}
+
+	return c.send(ctx, "POST", path, qry, nil, pr)
 }
 
 // LoadPullRequestActivities loads the given PullRequest's timeline of activities,
@@ -504,6 +539,38 @@ func (c *Client) Repos(ctx context.Context, pageToken *PageToken, searchQueries 
 	var repos []*Repo
 	next, err := c.page(ctx, "rest/api/1.0/repos", qry, pageToken, &repos)
 	return repos, next, err
+}
+
+func (c *Client) LabeledRepos(ctx context.Context, pageToken *PageToken, label string) ([]*Repo, *PageToken, error) {
+	u := fmt.Sprintf("rest/api/1.0/labels/%s/labeled", label)
+	qry := url.Values{
+		"REPOSITORY": []string{""},
+	}
+
+	var repos []*Repo
+	next, err := c.page(ctx, u, qry, pageToken, &repos)
+	return repos, next, err
+}
+
+// RepoIDs fetches a list of repositories that the user token has permission for.
+// Permission: ["admin", "read", "write"]
+func (c *Client) RepoIDs(ctx context.Context, permission string) ([]uint32, error) {
+	u := fmt.Sprintf("rest/sourcegraph-admin/1.0/permissions/repositories?permission=%s", permission)
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp []byte
+	err = c.do(ctx, req, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	bitmap := roaring.New()
+	if err := bitmap.UnmarshalBinary(resp); err != nil {
+		return nil, err
+	}
+	return bitmap.ToArray(), nil
 }
 
 func (c *Client) RecentRepos(ctx context.Context, pageToken *PageToken) ([]*Repo, *PageToken, error) {
@@ -986,6 +1053,16 @@ func IsNotFound(err error) bool {
 	return false
 }
 
+// IsNoSuchLabel reports whether err is a Bitbucket Server API "No Such Label"
+// error.
+func IsNoSuchLabel(err error) bool {
+	switch e := errors.Cause(err).(type) {
+	case *httpError:
+		return e.NoSuchLabelException()
+	}
+	return false
+}
+
 // IsDuplicatePullRequest reports whether err is a Bitbucket Server API
 // "Duplicate Pull Request" error.
 func IsDuplicatePullRequest(err error) bool {
@@ -994,6 +1071,15 @@ func IsDuplicatePullRequest(err error) bool {
 		return e.DuplicatePullRequest()
 	}
 	return false
+}
+
+// ExtractDuplicatePullRequest will attempt to extract a duplicate PR
+func ExtractDuplicatePullRequest(err error) (*PullRequest, error) {
+	switch e := errors.Cause(err).(type) {
+	case *httpError:
+		return e.ExtractExistingPullRequest()
+	}
+	return nil, fmt.Errorf("error does not contain existing PR")
 }
 
 type httpError struct {
@@ -1015,6 +1101,36 @@ func (e *httpError) NotFound() bool {
 }
 
 func (e *httpError) DuplicatePullRequest() bool {
-	const exception = "com.atlassian.bitbucket.pull.DuplicatePullRequestException"
-	return strings.Contains(string(e.Body), exception)
+	return strings.Contains(string(e.Body), bitbucketDuplicatePRException)
+}
+
+func (e *httpError) NoSuchLabelException() bool {
+	return strings.Contains(string(e.Body), bitbucketNoSuchLabelException)
+}
+
+const (
+	bitbucketDuplicatePRException = "com.atlassian.bitbucket.pull.DuplicatePullRequestException"
+	bitbucketNoSuchLabelException = "com.atlassian.bitbucket.label.NoSuchLabelException"
+)
+
+func (e *httpError) ExtractExistingPullRequest() (*PullRequest, error) {
+	var dest struct {
+		Errors []struct {
+			ExceptionName       string
+			ExistingPullRequest PullRequest
+		}
+	}
+
+	err := json.Unmarshal(e.Body, &dest)
+	if err != nil {
+		return nil, errors.Wrap(err, "unmarshalling error")
+	}
+
+	for _, e := range dest.Errors {
+		if e.ExceptionName == bitbucketDuplicatePRException {
+			return &e.ExistingPullRequest, nil
+		}
+	}
+
+	return nil, errors.New("existing PR not found")
 }

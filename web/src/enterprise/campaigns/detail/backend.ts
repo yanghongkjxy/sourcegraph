@@ -7,8 +7,6 @@ import {
     ICampaign,
     IUpdateCampaignInput,
     ICreateCampaignInput,
-    IExternalChangesetConnection,
-    IChangesetsOnCampaignArguments,
     ICampaignPlan,
     ICampaignPlanSpecification,
 } from '../../../../../shared/src/graphql/schema'
@@ -19,10 +17,6 @@ export type CampaignType = 'comby' | 'credentials'
 const campaignFragment = gql`
     fragment CampaignFields on Campaign {
         id
-        namespace {
-            id
-            namespaceName
-        }
         author {
             username
             avatarURL
@@ -37,11 +31,13 @@ const campaignFragment = gql`
         description
         createdAt
         updatedAt
+        closedAt
         url
         __typename
         changesets {
             totalCount
             nodes {
+                id
                 repository {
                     id
                     name
@@ -76,6 +72,7 @@ const campaignFragment = gql`
             openApproved
             openChangesRequested
             openPending
+            total
         }
     }
 
@@ -101,6 +98,7 @@ const campaignPlanFragment = gql`
             totalCount
             nodes {
                 __typename
+                id
                 repository {
                     id
                     name
@@ -181,28 +179,44 @@ export function previewCampaignPlan(
     )
 }
 
-export async function cancelCampaignPlan(plan: ID): Promise<void> {
+export async function retryCampaign(campaignID: ID): Promise<void> {
     const result = await mutateGraphQL(
         gql`
-            mutation CancelCampaignPlan($id: ID!) {
-                cancelCampaignPlan(id: $id)
+            mutation RetryCampaign($campaign: ID!) {
+                retryCampaign(campaign: $campaign) {
+                    id
+                }
             }
         `,
-        { id: plan }
+        { campaign: campaignID }
     ).toPromise()
     dataOrThrowErrors(result)
 }
 
-export async function deleteCampaign(campaign: ID): Promise<void> {
+export async function closeCampaign(campaign: ID, closeChangesets = false): Promise<void> {
     const result = await mutateGraphQL(
         gql`
-            mutation DeleteCampaign($campaign: ID!) {
-                deleteCampaign(campaign: $campaign) {
+            mutation CloseCampaign($campaign: ID!, $closeChangesets: Boolean!) {
+                closeCampaign(campaign: $campaign, closeChangesets: $closeChangesets) {
+                    id
+                }
+            }
+        `,
+        { campaign, closeChangesets }
+    ).toPromise()
+    dataOrThrowErrors(result)
+}
+
+export async function deleteCampaign(campaign: ID, closeChangesets = false): Promise<void> {
+    const result = await mutateGraphQL(
+        gql`
+            mutation DeleteCampaign($campaign: ID!, $closeChangesets: Boolean!) {
+                deleteCampaign(campaign: $campaign, closeChangesets: $closeChangesets) {
                     alwaysNil
                 }
             }
         `,
-        { campaign }
+        { campaign, closeChangesets }
     ).toPromise()
     dataOrThrowErrors(result)
 }
@@ -258,72 +272,5 @@ export const fetchCampaignPlanById = (campaignPlan: ID): Observable<ICampaignPla
                 throw new Error(`The given ID is a ${node.__typename}, not a CampaignPlan`)
             }
             return node
-        })
-    )
-
-export const queryChangesets = (
-    campaign: ID,
-    { first }: IChangesetsOnCampaignArguments
-): Observable<IExternalChangesetConnection> =>
-    queryGraphQL(
-        gql`
-            query CampaignChangesets($campaign: ID!, $first: Int) {
-                node(id: $campaign) {
-                    __typename
-                    ... on Campaign {
-                        changesets(first: $first) {
-                            totalCount
-                            nodes {
-                                __typename
-                                id
-                                title
-                                body
-                                state
-                                reviewState
-                                repository {
-                                    name
-                                    url
-                                }
-                                externalURL {
-                                    url
-                                }
-                                createdAt
-                                diff {
-                                    fileDiffs {
-                                        nodes {
-                                            ...FileDiffFields
-                                        }
-                                        totalCount
-                                        pageInfo {
-                                            hasNextPage
-                                        }
-                                        diffStat {
-                                            ...DiffStatFields
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            ${FileDiffFields}
-
-            ${FileDiffHunkRangeFields}
-
-            ${DiffStatFields}
-        `,
-        { campaign, first }
-    ).pipe(
-        map(dataOrThrowErrors),
-        map(({ node }) => {
-            if (!node) {
-                throw new Error(`Campaign with ID ${campaign} does not exist`)
-            }
-            if (node.__typename !== 'Campaign') {
-                throw new Error(`The given ID is a ${node.__typename}, not a Campaign`)
-            }
-            return node.changesets
         })
     )

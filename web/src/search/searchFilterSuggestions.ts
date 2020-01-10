@@ -1,6 +1,7 @@
-import { Suggestion, SuggestionTypes, FiltersSuggestionTypes } from './input/Suggestion'
+import { Suggestion, FiltersSuggestionTypes } from './input/Suggestion'
 import { assign } from 'lodash/fp'
 import { languageIcons } from '../../../shared/src/components/languageIcons'
+import { SuggestionTypes } from '../../../shared/src/search/suggestions/util'
 
 export type SearchFilterSuggestions = Record<
     FiltersSuggestionTypes,
@@ -116,7 +117,14 @@ export const searchFilterSuggestions: SearchFilterSuggestions = {
         ),
     },
     file: {
-        values: [],
+        values: [
+            { value: '(test|spec)', displayValue: 'Test files' },
+            { value: '.(txt|md)', displayValue: 'Text files' },
+        ].map(suggestion => ({
+            ...suggestion,
+            description: suggestion.value,
+            type: SuggestionTypes.file,
+        })),
     },
     lang: {
         values: Object.keys(languageIcons).map(value => ({ type: SuggestionTypes.lang, value })),

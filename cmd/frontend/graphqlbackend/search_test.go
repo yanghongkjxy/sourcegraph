@@ -8,10 +8,11 @@ import (
 
 	"github.com/graph-gophers/graphql-go"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/db"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/search"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
+	"github.com/sourcegraph/sourcegraph/internal/search"
+	"github.com/sourcegraph/sourcegraph/internal/search/query/syntax"
 	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
 
@@ -229,11 +230,11 @@ func testStringResult(result *searchSuggestionResolver) string {
 	var name string
 	switch r := result.result.(type) {
 	case *RepositoryResolver:
-		name = "repo:" + string(r.repo.Name)
+		name = "repo:" + syntax.MaybeEscapeValue(string(r.repo.Name))
 	case *GitTreeEntryResolver:
-		name = "file:" + r.Path()
+		name = "file:" + syntax.MaybeEscapeValue(r.Path())
 	case *languageResolver:
-		name = "lang:" + r.name
+		name = "lang:" + syntax.MaybeEscapeValue(r.name)
 	default:
 		panic("never here")
 	}
@@ -326,6 +327,7 @@ func Test_detectSearchType(t *testing.T) {
 		{"V2, override regex variant pattern type with double quotes", "V2", &typeLiteral, `patterntype:"regex"`, SearchTypeRegex},
 		{"V2, override regex variant pattern type with single quotes", "V2", &typeLiteral, `patterntype:'regex'`, SearchTypeRegex},
 		{"V1, override literal pattern type", "V1", &typeRegexp, "patterntype:literal", SearchTypeLiteral},
+		{"V1, override literal pattern type, with case-insensitive query", "V1", &typeRegexp, "pAtTErNTypE:literal", SearchTypeLiteral},
 	}
 
 	for _, test := range testCases {

@@ -30,6 +30,9 @@ export function fetchLsifDumps({
                                     path
                                     url
                                 }
+                                inputRepoName
+                                inputCommit
+                                inputRoot
                                 processedAt
                             }
 
@@ -60,24 +63,33 @@ export function fetchLsifDumps({
 }
 
 /**
- * Fetch LSIF jobs with the given state.
+ * Fetch LSIF upload with the given state.
  */
-export function fetchLsifJobs({
+export function fetchLsifUploads({
     state,
     first,
     query,
-}: GQL.ILsifJobsOnQueryArguments): Observable<GQL.ILSIFJobConnection> {
+}: GQL.ILsifUploadsOnQueryArguments): Observable<GQL.ILSIFUploadConnection> {
     return queryGraphQL(
         gql`
-            query LsifJobs($state: LSIFJobState!, $first: Int, $query: String) {
-                lsifJobs(state: $state, first: $first, query: $query) {
+            query LsifUploads($state: LSIFUploadState!, $first: Int, $query: String) {
+                lsifUploads(state: $state, first: $first, query: $query) {
                     nodes {
                         id
-                        arguments
+                        projectRoot {
+                            commit {
+                                abbreviatedOID
+                            }
+                            path
+                            url
+                        }
+                        inputRepoName
+                        inputCommit
+                        inputRoot
                         state
-                        queuedAt
+                        uploadedAt
                         startedAt
-                        completedOrErroredAt
+                        finishedAt
                     }
                     pageInfo {
                         hasNextPage
@@ -88,6 +100,6 @@ export function fetchLsifJobs({
         { state: state.toUpperCase(), first, query }
     ).pipe(
         map(dataOrThrowErrors),
-        map(data => data.lsifJobs)
+        map(data => data.lsifUploads)
     )
 }

@@ -18,7 +18,7 @@ describe('Backend', () => {
     beforeAll(async () => {
         await ctx.init()
 
-        if (!ctx.xrepoDatabase) {
+        if (!ctx.dumpManager || !ctx.dependencyManager) {
             return
         }
 
@@ -67,7 +67,7 @@ describe('Backend', () => {
             )
         )
 
-        await ctx.xrepoDatabase.updateCommits(
+        await ctx.dumpManager.updateCommits(
             repository,
             new Map<string, Set<string>>(
                 Array.from({ length: MAX_TRAVERSAL_LIMIT * 2 + 1 }, (_, i) => [
@@ -104,18 +104,15 @@ describe('Backend', () => {
         ]
 
         for (const { commit, refs } of testCases) {
-            const fetch = async (paginationContext?: ReferencePaginationContext) =>
+            const fetch = async () =>
                 util.filterNodeModules(
-                    (await backend.references(
+                    util.mapInternalLocations(
                         repository,
-                        commit,
-                        'a/src/index.ts',
-                        {
+                        (await backend.references(repository, commit, 'a/src/index.ts', {
                             line: 0,
                             character: 17,
-                        },
-                        paginationContext
-                    )) || { locations: [] }
+                        })) || { locations: [] }
+                    )
                 )
 
             const { locations, cursor } = await fetch()
@@ -142,16 +139,19 @@ describe('Backend', () => {
 
         const fetch = async (paginationContext?: ReferencePaginationContext) =>
             util.filterNodeModules(
-                (await backend.references(
+                util.mapInternalLocations(
                     repository,
-                    c3,
-                    'a/src/index.ts',
-                    {
-                        line: 0,
-                        character: 17,
-                    },
-                    paginationContext
-                )) || { locations: [] }
+                    (await backend.references(
+                        repository,
+                        c3,
+                        'a/src/index.ts',
+                        {
+                            line: 0,
+                            character: 17,
+                        },
+                        paginationContext
+                    )) || { locations: [] }
+                )
             )
 
         const { locations: locations0, cursor: cursor0 } = await fetch({ limit: 50 }) // all local

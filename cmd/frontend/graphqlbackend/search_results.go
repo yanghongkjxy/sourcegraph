@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/inventory"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
 
@@ -23,16 +24,17 @@ import (
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"gopkg.in/inconshreveable/log15.v2"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/goroutine"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/search"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/search/query"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/gitserver"
 	"github.com/sourcegraph/sourcegraph/internal/lazyregexp"
 	"github.com/sourcegraph/sourcegraph/internal/rcache"
+	"github.com/sourcegraph/sourcegraph/internal/search"
+	"github.com/sourcegraph/sourcegraph/internal/search/query"
 	"github.com/sourcegraph/sourcegraph/internal/trace"
 	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
@@ -65,6 +67,10 @@ func (c *searchResultsCommon) LimitHit() bool {
 
 func (c *searchResultsCommon) Repositories() []*RepositoryResolver {
 	return RepositoryResolvers(c.repos)
+}
+
+func (c *searchResultsCommon) RepositoriesCount() int32 {
+	return int32(len(c.repos))
 }
 
 func (c *searchResultsCommon) RepositoriesSearched() []*RepositoryResolver {
@@ -458,6 +464,13 @@ loop:
 	return sparkline, nil
 }
 
+var searchResponseCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "src",
+	Subsystem: "graphql",
+	Name:      "search_response",
+	Help:      "Number of searches that have ended in the given status (success, error, timeout, partial_timeout).",
+}, []string{"status", "alert_type"})
+
 func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, error) {
 	// If the request is a paginated one, we handle it separately. See
 	// paginatedResults for more details.
@@ -466,11 +479,27 @@ func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, e
 	}
 
 	rr, err := r.resultsWithTimeoutSuggestion(ctx)
-	if err != nil {
-		return nil, err
-	}
 
-	return rr, nil
+	// Record what type of response we sent back via Prometheus.
+	var status, alertType string
+	switch {
+	case err == context.DeadlineExceeded || (err == nil && len(rr.searchResultsCommon.timedout) > 0 && len(rr.searchResultsCommon.timedout) == len(rr.searchResultsCommon.repos)):
+		status = "timeout"
+	case err == nil && len(rr.searchResultsCommon.timedout) > 0:
+		status = "partial_timeout"
+	case err == nil && rr.alert != nil:
+		status = "alert"
+		alertType = rr.alert.prometheusType
+	case err != nil:
+		status = "error"
+	case err == nil:
+		status = "success"
+	default:
+		status = "unknown"
+	}
+	searchResponseCounter.WithLabelValues(status, alertType).Inc()
+
+	return rr, err
 }
 
 // resultsWithTimeoutSuggestion calls doResults, and in case of deadline
@@ -479,27 +508,37 @@ func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, e
 func (r *searchResolver) resultsWithTimeoutSuggestion(ctx context.Context) (*SearchResultsResolver, error) {
 	start := time.Now()
 	rr, err := r.doResults(ctx, "")
-	if err != nil {
-		if err == context.DeadlineExceeded {
-			dt := time.Since(start)
-			dt2 := longer(2, dt)
-			rr = &SearchResultsResolver{
-				alert: &searchAlert{
-					title:       "Timeout",
-					description: fmt.Sprintf("Deadline exceeded after about %s.", roundStr(dt.String())),
-					proposedQueries: []*searchQueryDescription{
-						{
-							description: "query with longer timeout",
-							query:       fmt.Sprintf("timeout:%v %s", dt2, omitQueryFields(r, query.FieldTimeout)),
-						},
+
+	// If we encountered a context timeout, it indicates one of the many result
+	// type searchers (file, diff, symbol, etc) completely timed out and could not
+	// produce even partial results. Other searcher types may have produced results.
+	//
+	// In this case, or if we got a partial timeout where ALL repositories timed out,
+	// we do not return partial results and instead display a timeout alert.
+	shouldShowAlert := err == context.DeadlineExceeded
+	if err == nil && len(rr.searchResultsCommon.timedout) > 0 && len(rr.searchResultsCommon.timedout) == len(rr.searchResultsCommon.repos) {
+		shouldShowAlert = true
+	}
+	if shouldShowAlert {
+		dt := time.Since(start)
+		dt2 := longer(2, dt)
+		rr = &SearchResultsResolver{
+			alert: &searchAlert{
+				prometheusType: "timed_out",
+				title:          "Timed out while searching",
+				description:    fmt.Sprintf("We weren't able to find any results in %s.", roundStr(dt.String())),
+				patternType:    r.patternType,
+				proposedQueries: []*searchQueryDescription{
+					{
+						description: "query with longer timeout",
+						query:       fmt.Sprintf("timeout:%v %s", dt2, omitQueryFields(r, query.FieldTimeout)),
 					},
 				},
-			}
-			return rr, nil
+			},
 		}
-		return nil, err
+		return rr, nil
 	}
-	return rr, nil
+	return rr, err
 }
 
 // longer returns a suggested longer time to wait if the given duration wasn't long enough.
@@ -537,13 +576,19 @@ func roundStr(s string) string {
 			return s
 		}
 		f = math.Round(f)
-		return fmt.Sprintf("%d", int(f))
+		return strconv.Itoa(int(f))
 	})
 }
 
 type searchResultsStats struct {
 	JApproximateResultCount string
 	JSparkline              []int32
+
+	sr *searchResolver
+
+	once   sync.Once
+	srs    *SearchResultsResolver
+	srsErr error
 }
 
 func (srs *searchResultsStats) ApproximateResultCount() string { return srs.JApproximateResultCount }
@@ -583,6 +628,7 @@ func (r *searchResolver) Stats(ctx context.Context) (stats *searchResultsStats, 
 		if err := json.Unmarshal(jsonRes, &stats); err != nil {
 			return nil, err
 		}
+		stats.sr = r
 		return stats, nil
 	}
 
@@ -626,6 +672,7 @@ func (r *searchResolver) Stats(ctx context.Context) (stats *searchResultsStats, 
 	stats = &searchResultsStats{
 		JApproximateResultCount: v.ApproximateResultCount(),
 		JSparkline:              sparkline,
+		sr:                      r,
 	}
 
 	// Store in the cache if we got non-zero results. If we got zero results,
@@ -650,7 +697,7 @@ type getPatternInfoOptions struct {
 }
 
 // getPatternInfo gets the search pattern info for the query in the resolver.
-func (r *searchResolver) getPatternInfo(opts *getPatternInfoOptions) (*search.PatternInfo, error) {
+func (r *searchResolver) getPatternInfo(opts *getPatternInfoOptions) (*search.TextPatternInfo, error) {
 	var patternsToCombine []string
 	isRegExp := false
 	isStructuralPat := false
@@ -707,6 +754,11 @@ func (r *searchResolver) getPatternInfo(opts *getPatternInfoOptions) (*search.Pa
 		}
 	}
 
+	var combyRule []string
+	for _, v := range r.query.Values(query.FieldCombyRule) {
+		combyRule = append(combyRule, asString(v))
+	}
+
 	// Handle lang: and -lang: filters.
 	langIncludePatterns, langExcludePatterns, err := langIncludeExcludePatterns(r.query.StringValues(query.FieldLang))
 	if err != nil {
@@ -715,7 +767,9 @@ func (r *searchResolver) getPatternInfo(opts *getPatternInfoOptions) (*search.Pa
 	includePatterns = append(includePatterns, langIncludePatterns...)
 	excludePatterns = append(excludePatterns, langExcludePatterns...)
 
-	patternInfo := &search.PatternInfo{
+	languages, _ := r.query.StringValues(query.FieldLang)
+
+	patternInfo := &search.TextPatternInfo{
 		IsRegExp:                     isRegExp,
 		IsStructuralPat:              isStructuralPat,
 		IsCaseSensitive:              r.query.IsCaseSensitive(),
@@ -725,7 +779,9 @@ func (r *searchResolver) getPatternInfo(opts *getPatternInfoOptions) (*search.Pa
 		FilePatternsReposMustInclude: filePatternsReposMustInclude,
 		FilePatternsReposMustExclude: filePatternsReposMustExclude,
 		PathPatternsAreRegExps:       true,
+		Languages:                    languages,
 		PathPatternsAreCaseSensitive: r.query.IsCaseSensitive(),
+		CombyRule:                    strings.Join(combyRule, ""),
 	}
 	if len(excludePatterns) > 0 {
 		patternInfo.ExcludePattern = unionRegExps(excludePatterns)
@@ -766,7 +822,7 @@ func (r *searchResolver) withTimeout(ctx context.Context) (context.Context, cont
 	return ctx, cancel, nil
 }
 
-func (r *searchResolver) determineResultTypes(args search.Args, forceOnlyResultType string) (resultTypes []string, seenResultTypes map[string]struct{}) {
+func (r *searchResolver) determineResultTypes(args search.TextParameters, forceOnlyResultType string) (resultTypes []string, seenResultTypes map[string]struct{}) {
 	// Determine which types of results to return.
 	if forceOnlyResultType != "" {
 		resultTypes = []string{forceOnlyResultType}
@@ -781,9 +837,9 @@ func (r *searchResolver) determineResultTypes(args search.Args, forceOnlyResultT
 	seenResultTypes = make(map[string]struct{}, len(resultTypes))
 	for _, resultType := range resultTypes {
 		if resultType == "file" {
-			args.Pattern.PatternMatchesContent = true
+			args.PatternInfo.PatternMatchesContent = true
 		} else if resultType == "path" {
-			args.Pattern.PatternMatchesPath = true
+			args.PatternInfo.PatternMatchesPath = true
 		}
 	}
 	return resultTypes, seenResultTypes
@@ -814,7 +870,7 @@ func (r *searchResolver) determineRepos(ctx context.Context, tr *trace.Trace, st
 
 // Surface an alert if a query exceeds limits that we place on search. Currently limits
 // diff and commit searches where more than repoLimit repos need to be searched.
-func alertOnSearchLimit(resultTypes []string, args *search.Args) ([]string, *searchAlert) {
+func alertOnSearchLimit(resultTypes []string, args *search.TextParameters) ([]string, *searchAlert) {
 	var alert *searchAlert
 	repoLimit := 50
 	if len(args.Repos) > repoLimit {
@@ -822,10 +878,17 @@ func alertOnSearchLimit(resultTypes []string, args *search.Args) ([]string, *sea
 			resultType := resultTypes[0]
 			switch resultType {
 			case "commit", "diff":
+				if _, afterPresent := args.Query.Fields["after"]; afterPresent {
+					break
+				}
+				if _, beforePresent := args.Query.Fields["before"]; beforePresent {
+					break
+				}
 				resultTypes = []string{}
 				alert = &searchAlert{
-					title:       fmt.Sprintf("Too many matching repositories for %s search to handle", resultType),
-					description: fmt.Sprintf(`%s search can currently only handle searching over %d repositories at a time. Try using the "repo:" filter to narrow down which repositories to search. Tracking issue: https://github.com/sourcegraph/sourcegraph/issues/6826`, strings.Title(resultType), repoLimit),
+					prometheusType: "exceeded_diff_commit_search_limit",
+					title:          fmt.Sprintf("Too many matching repositories for %s search to handle", resultType),
+					description:    fmt.Sprintf(`%s search can currently only handle searching over %d repositories at a time. Try using the "repo:" filter to narrow down which repositories to search, or using 'after:"1 week ago"'. Tracking issue: https://github.com/sourcegraph/sourcegraph/issues/6826`, strings.Title(resultType), repoLimit),
 				}
 			}
 		}
@@ -833,6 +896,50 @@ func alertOnSearchLimit(resultTypes []string, args *search.Args) ([]string, *sea
 	return resultTypes, alert
 }
 
+// alertOnError filters certain errors from multiErr and converts them into an
+// alert. We support surfacing only one alert at a time, so the last converted error
+// will be surfaced in the alert.
+func alertOnError(multiErr *multierror.Error) (newMultiErr *multierror.Error, alert *searchAlert) {
+	if multiErr != nil {
+		for _, err := range multiErr.Errors {
+			if strings.Contains(err.Error(), "Assert_failure zip") {
+				alert = &searchAlert{
+					prometheusType: "structural_search_repo_too_large",
+					title:          "Repository too large for structural search",
+					description:    "One repository is too large to perform structural search. Use the `repo:` filter to run on a specific repository. This is a temporary restriction that will be removed in the future. Tracking issue: https://github.com/sourcegraph/sourcegraph/issues/7133",
+				}
+			} else if strings.Contains(err.Error(), "Worker_oomed") || strings.Contains(err.Error(), "Worker_exited_abnormally") {
+				alert = &searchAlert{
+					prometheusType: "structural_search_needs_more_memory",
+					title:          "Structural search needs more memory",
+					description:    "Running your structural search may require more memory. If you are running the query on many repositories, try reducing the number of repositories with the `repo:` filter.",
+				}
+			} else if strings.Contains(err.Error(), "no indexed repositories for structural search") {
+				var msg string
+				if envvar.SourcegraphDotComMode() {
+					msg = "The good news is you can index any repository you like in a self-install. It takes less than 5 minutes to set up: https://docs.sourcegraph.com/#quickstart"
+				} else {
+					msg = "Learn more about managing indexed repositories in our documentation: https://docs.sourcegraph.com/admin/search#indexed-search."
+				}
+				alert = &searchAlert{
+					prometheusType: "structural_search_on_zero_indexed_repos",
+					title:          "Unindexed repositories with structural search",
+					description:    fmt.Sprintf("Structural search currently only works on indexed repositories. Some of the repositories to search are not indexed, so we can't return results for them. %s", msg),
+				}
+			} else {
+				newMultiErr = multierror.Append(newMultiErr, err)
+			}
+		}
+	}
+	return newMultiErr, alert
+}
+
+// doResults is one of the highest level search functions that handles finding results.
+//
+// If forceOnlyResultType is specified, only results of the given type are returned,
+// regardless of what `type:` is specified in the query string.
+//
+// Partial results AND an error may be returned.
 func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType string) (res *SearchResultsResolver, err error) {
 	tr, ctx := trace.New(ctx, "graphql.SearchResults", r.rawQuery())
 	defer func() {
@@ -865,15 +972,15 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 	if err != nil {
 		return nil, err
 	}
-	args := search.Args{
-		Pattern:         p,
+	args := search.TextParameters{
+		PatternInfo:     p,
 		Repos:           repos,
 		Query:           r.query,
 		UseFullDeadline: r.searchTimeoutFieldSet(),
 		Zoekt:           r.zoekt,
 		SearcherURLs:    r.searcherURLs,
 	}
-	if err := args.Pattern.Validate(); err != nil {
+	if err := args.PatternInfo.Validate(); err != nil {
 		return nil, &badRequestError{err}
 	}
 
@@ -996,7 +1103,7 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 
 				fileResults, fileCommon, err := searchFilesInRepos(ctx, &args)
 				// Timeouts are reported through searchResultsCommon so don't report an error for them
-				if err != nil && !(err == context.DeadlineExceeded || err == context.Canceled) {
+				if err != nil && !isContextError(ctx, err) {
 					multiErrMu.Lock()
 					multiErr = multierror.Append(multiErr, errors.Wrap(err, "text search failed"))
 					multiErrMu.Unlock()
@@ -1028,6 +1135,22 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 			wg.Add(1)
 			goroutine.Go(func() {
 				defer wg.Done()
+				old := args.PatternInfo
+				patternInfo := &search.CommitPatternInfo{
+					Pattern:                      old.Pattern,
+					IsRegExp:                     old.IsRegExp,
+					IsCaseSensitive:              old.IsCaseSensitive,
+					FileMatchLimit:               old.FileMatchLimit,
+					IncludePatterns:              old.IncludePatterns,
+					ExcludePattern:               old.ExcludePattern,
+					PathPatternsAreRegExps:       old.PathPatternsAreRegExps,
+					PathPatternsAreCaseSensitive: p.PathPatternsAreCaseSensitive,
+				}
+				args := search.TextParametersForCommitParameters{
+					PatternInfo: patternInfo,
+					Repos:       args.Repos,
+					Query:       args.Query,
+				}
 				diffResults, diffCommon, err := searchCommitDiffsInRepos(ctx, &args)
 				// Timeouts are reported through searchResultsCommon so don't report an error for them
 				if err != nil && !isContextError(ctx, err) {
@@ -1052,6 +1175,22 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 			goroutine.Go(func() {
 				defer wg.Done()
 
+				old := args.PatternInfo
+				patternInfo := &search.CommitPatternInfo{
+					Pattern:                      old.Pattern,
+					IsRegExp:                     old.IsRegExp,
+					IsCaseSensitive:              old.IsCaseSensitive,
+					FileMatchLimit:               old.FileMatchLimit,
+					IncludePatterns:              old.IncludePatterns,
+					ExcludePattern:               old.ExcludePattern,
+					PathPatternsAreRegExps:       old.PathPatternsAreRegExps,
+					PathPatternsAreCaseSensitive: old.PathPatternsAreCaseSensitive,
+				}
+				args := search.TextParametersForCommitParameters{
+					PatternInfo: patternInfo,
+					Repos:       args.Repos,
+					Query:       args.Query,
+				}
 				commitResults, commitCommon, err := searchCommitLogInRepos(ctx, &args)
 				// Timeouts are reported through searchResultsCommon so don't report an error for them
 				if err != nil && !isContextError(ctx, err) {
@@ -1112,6 +1251,11 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 	timer.Stop()
 
 	tr.LazyPrintf("results=%d limitHit=%v cloning=%d missing=%d timedout=%d", len(results), common.limitHit, len(common.cloning), len(common.missing), len(common.timedout))
+
+	multiErr, newAlert := alertOnError(multiErr)
+	if newAlert != nil {
+		alert = newAlert // takes higher precedence
+	}
 
 	if len(missingRepoRevs) > 0 {
 		alert = r.alertForMissingRepoRevs(missingRepoRevs)

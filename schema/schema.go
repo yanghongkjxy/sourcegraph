@@ -161,7 +161,7 @@ type BitbucketServerAuthorization struct {
 type BitbucketServerConnection struct {
 	// Authorization description: If non-null, enforces Bitbucket Server repository permissions.
 	Authorization *BitbucketServerAuthorization `json:"authorization,omitempty"`
-	// Certificate description: TLS certificate of the Bitbucket Server instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`
+	// Certificate description: TLS certificate of the Bitbucket Server instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	Certificate string `json:"certificate,omitempty"`
 	// Exclude description: A list of repositories to never mirror from this Bitbucket Server instance. Takes precedence over "repos" and "repositoryQuery".
 	//
@@ -280,68 +280,6 @@ type CloneURLToRepositoryName struct {
 	To string `json:"to"`
 }
 
-// CriticalConfiguration description: Critical configuration for a Sourcegraph site.
-type CriticalConfiguration struct {
-	// AuthDisableUsernameChanges description: WARNING: This option has been removed in favor of `auth.enableUsernameChanges`. As of 3.3, it has no effect, and as of 3.4, it will be removed entirely.
-	AuthDisableUsernameChanges bool `json:"auth.disableUsernameChanges,omitempty"`
-	// AuthEnableUsernameChanges description: Enables users to change their username after account creation. Warning: setting this to be true has security implications if you have enabled (or will at any point in the future enable) repository permissions with an option that relies on username equivalency between Sourcegraph and an external service or authentication provider. Do NOT set this to true if you are using non-built-in authentication OR rely on username equivalency for repository permissions.
-	AuthEnableUsernameChanges bool `json:"auth.enableUsernameChanges,omitempty"`
-	// AuthProviders description: The authentication providers to use for identifying and signing in users. See instructions below for configuring SAML, OpenID Connect (including G Suite), and HTTP authentication proxies. Multiple authentication providers are supported (by specifying multiple elements in this array).
-	AuthProviders []AuthProviders `json:"auth.providers,omitempty"`
-	// AuthPublic description: WARNING: This option has been removed as of 3.8.
-	AuthPublic bool `json:"auth.public,omitempty"`
-	// AuthSessionExpiry description: The duration of a user session, after which it expires and the user is required to re-authenticate. The default is 90 days. There is typically no need to set this, but some users may have specific internal security requirements.
-	//
-	// The string format is that of the Duration type in the Go time package (https://golang.org/pkg/time/#ParseDuration). E.g., "720h", "43200m", "2592000s" all indicate a timespan of 30 days.
-	//
-	// Note: changing this field does not affect the expiration of existing sessions. If you would like to enforce this limit for existing sessions, you must log out currently signed-in users. You can force this by removing all keys beginning with "session_" from the Redis store:
-	//
-	// * For deployments using `sourcegraph/server`: `docker exec $CONTAINER_ID redis-cli --raw keys 'session_*' | xargs docker exec $CONTAINER_ID redis-cli del`
-	// * For cluster deployments:
-	//   ```
-	//   REDIS_POD="$(kubectl get pods -l app=redis-store -o jsonpath={.items[0].metadata.name})";
-	//   kubectl exec "$REDIS_POD" -- redis-cli --raw keys 'session_*' | xargs kubectl exec "$REDIS_POD" -- redis-cli --raw del;
-	//   ```
-	//
-	AuthSessionExpiry string `json:"auth.sessionExpiry,omitempty"`
-	// AuthUserOrgMap description: Ensure that matching users are members of the specified orgs (auto-joining users to the orgs if they are not already a member). Provide a JSON object of the form `{"*": ["org1", "org2"]}`, where org1 and org2 are orgs that all users are automatically joined to. Currently the only supported key is `"*"`.
-	AuthUserOrgMap map[string][]string `json:"auth.userOrgMap,omitempty"`
-	// ExternalURL description: The externally accessible URL for Sourcegraph (i.e., what you type into your browser). Previously called `appURL`.
-	ExternalURL string `json:"externalURL,omitempty"`
-	// HtmlBodyBottom description: HTML to inject at the bottom of the `<body>` element on each page, for analytics scripts
-	HtmlBodyBottom string `json:"htmlBodyBottom,omitempty"`
-	// HtmlBodyTop description: HTML to inject at the top of the `<body>` element on each page, for analytics scripts
-	HtmlBodyTop string `json:"htmlBodyTop,omitempty"`
-	// HtmlHeadBottom description: HTML to inject at the bottom of the `<head>` element on each page, for analytics scripts
-	HtmlHeadBottom string `json:"htmlHeadBottom,omitempty"`
-	// HtmlHeadTop description: HTML to inject at the top of the `<head>` element on each page, for analytics scripts
-	HtmlHeadTop string `json:"htmlHeadTop,omitempty"`
-	// LicenseKey description: The license key associated with a Sourcegraph product subscription, which is necessary to activate Sourcegraph Enterprise functionality. To obtain this value, contact Sourcegraph to purchase a subscription.
-	LicenseKey string `json:"licenseKey,omitempty"`
-	// LightstepAccessToken description: Access token for sending traces to LightStep.
-	LightstepAccessToken string `json:"lightstepAccessToken,omitempty"`
-	// LightstepProject description: The project ID on LightStep that corresponds to the `lightstepAccessToken`, only for generating links to traces. For example, if `lightstepProject` is `mycompany-prod`, all HTTP responses from Sourcegraph will include an X-Trace header with the URL to the trace on LightStep, of the form `https://app.lightstep.com/mycompany-prod/trace?span_guid=...&at_micros=...`.
-	LightstepProject string `json:"lightstepProject,omitempty"`
-	// Log description: Configuration for logging and alerting, including to external services.
-	Log *Log `json:"log,omitempty"`
-	// UpdateChannel description: The channel on which to automatically check for Sourcegraph updates.
-	UpdateChannel string `json:"update.channel,omitempty"`
-	// UseJaeger description: Use local Jaeger instance for tracing. Kubernetes cluster deployments only.
-	//
-	// After enabling Jaeger and updating your Kubernetes cluster, `kubectl get pods`
-	// should display pods prefixed with `jaeger-cassandra`,
-	// `jaeger-collector`, and `jaeger-query`. `jaeger-collector` will start
-	// crashing until you initialize the Cassandra DB. To do so, do the
-	// following:
-	//
-	// 1. Install [`cqlsh`](https://pypi.python.org/pypi/cqlsh).
-	// 1. `kubectl port-forward $(kubectl get pods | grep jaeger-cassandra | awk '{ print $1 }') 9042`
-	// 1. `git clone https://github.com/uber/jaeger && cd jaeger && MODE=test ./plugin/storage/cassandra/schema/create.sh | cqlsh`
-	// 1. `kubectl port-forward $(kubectl get pods | grep jaeger-query | awk '{ print $1 }') 16686`
-	// 1. Go to http://localhost:16686 to view the Jaeger dashboard.
-	UseJaeger bool `json:"useJaeger,omitempty"`
-}
-
 // Discussions description: Configures Sourcegraph code discussions.
 type Discussions struct {
 	// AbuseEmails description: Email addresses to notify of e.g. new user reports about abusive comments. Otherwise emails will not be sent.
@@ -394,10 +332,18 @@ type ExcludedGitoliteRepo struct {
 type ExperimentalFeatures struct {
 	// Automation description: Enables the experimental code automation features.
 	Automation string `json:"automation,omitempty"`
+	// BitbucketServerFastPerm description: Enables fetching Bitbucket Server permissions through the roaring bitmap endpoint. This requires the installation of the Bitbucket Server Sourcegraph plugin. Warning: there may be performance degradation under significant load.
+	BitbucketServerFastPerm string `json:"bitbucketServerFastPerm,omitempty"`
 	// Discussions description: Enables the code discussions experiment.
 	Discussions string `json:"discussions,omitempty"`
 	// EventLogging description: Enables user event logging inside of the Sourcegraph instance. This will allow admins to have greater visibility of user activity, such as frequently viewed pages, frequent searches, and more. These event logs (and any specific user actions) are only stored locally, and never leave this Sourcegraph instance.
 	EventLogging string `json:"eventLogging,omitempty"`
+	// SearchMultipleRevisionsPerRepository description: Enables searching multiple revisions of the same repository (using `repo:myrepo@branch1:branch2`).
+	SearchMultipleRevisionsPerRepository *bool `json:"searchMultipleRevisionsPerRepository,omitempty"`
+	// SplitSearchModes description: Enables toggling between the current omni search mode, and experimental interactive search mode.
+	SplitSearchModes string `json:"splitSearchModes,omitempty"`
+	// StructuralSearch description: Enables structural search.
+	StructuralSearch string `json:"structuralSearch,omitempty"`
 }
 
 // Extensions description: Configures Sourcegraph extensions.
@@ -423,6 +369,8 @@ type ExternalIdentity struct {
 
 // GitHubAuthProvider description: Configures the GitHub (or GitHub Enterprise) OAuth authentication provider for SSO. In addition to specifying this configuration object, you must also create a OAuth App on your GitHub instance: https://developer.github.com/apps/building-oauth-apps/creating-an-oauth-app/. When a user signs into Sourcegraph or links their GitHub account to their existing Sourcegraph account, GitHub will prompt the user for the repo scope.
 type GitHubAuthProvider struct {
+	// AllowOrgs description: Restricts new logins to members of these GitHub organizations. Existing sessions won't be invalidated. Leave empty or unset for no org restrictions.
+	AllowOrgs []string `json:"allowOrgs,omitempty"`
 	// AllowSignup description: Allows new visitors to sign up for accounts via GitHub authentication. If false, users signing in via GitHub must have an existing Sourcegraph account, which will be linked to their GitHub identity after sign-in.
 	AllowSignup bool `json:"allowSignup,omitempty"`
 	// ClientID description: The Client ID of the GitHub OAuth app, accessible from https://github.com/settings/developers (or the same path on GitHub Enterprise).
@@ -449,7 +397,7 @@ type GitHubAuthorization struct {
 type GitHubConnection struct {
 	// Authorization description: If non-null, enforces GitHub repository permissions. This requires that there is an item in the `auth.providers` field of type "github" with the same `url` field as specified in this `GitHubConnection`.
 	Authorization *GitHubAuthorization `json:"authorization,omitempty"`
-	// Certificate description: TLS certificate of the GitHub Enterprise instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`
+	// Certificate description: TLS certificate of the GitHub Enterprise instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	Certificate string `json:"certificate,omitempty"`
 	// Exclude description: A list of repositories to never mirror from this GitHub instance. Takes precedence over "orgs", "repos", and "repositoryQuery" configuration.
 	//
@@ -534,7 +482,7 @@ type GitLabAuthorization struct {
 type GitLabConnection struct {
 	// Authorization description: If non-null, enforces GitLab repository permissions. This requires that there be an item in the `auth.providers` field of type "gitlab" with the same `url` field as specified in this `GitLabConnection`.
 	Authorization *GitLabAuthorization `json:"authorization,omitempty"`
-	// Certificate description: TLS certificate of the GitLab instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`
+	// Certificate description: TLS certificate of the GitLab instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM`. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	Certificate string `json:"certificate,omitempty"`
 	// Exclude description: A list of projects to never mirror from this GitLab instance. Takes precedence over "projects" and "projectQuery" configuration. Supports excluding by name ({"name": "group/name"}) or by ID ({"id": 42}).
 	Exclude []*ExcludedGitLabProject `json:"exclude,omitempty"`
@@ -710,6 +658,14 @@ type ParentSourcegraph struct {
 	Url string `json:"url,omitempty"`
 }
 
+// PermissionsUserMapping description: Settings for Sourcegraph permissions, which allow the site admin to explicitly manage repository permissions via the GraphQL API. This setting cannot be enabled if repository permissions for any specific external service are enabled (i.e., when the external service's `authorization` field is set).
+type PermissionsUserMapping struct {
+	// BindID description: The type of identifier to identify a user. The default is "email", which uses the email address to identify a user. Use "username" to identify a user by their username. Changing this setting will erase any permissions created for users that do not yet exist.
+	BindID string `json:"bindID,omitempty"`
+	// Enabled description: Whether permissions user mapping is enabled. There must be no `authorization` field in any external service configuration before enabling this.
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 // Phabricator description: Phabricator instance that integrates with this Gitolite instance
 type Phabricator struct {
 	// CallsignCommand description:  Bash command that prints out the Phabricator callsign for a Gitolite repository. This will be run with environment variable $REPO set to the name of the repository and used to obtain the Phabricator metadata for a Gitolite repository. (Note: this requires `bash` to be installed.)
@@ -749,7 +705,7 @@ type SAMLAuthProvider struct {
 	// ConfigID description: An identifier that can be used to reference this authentication provider in other parts of the config. For example, in configuration for a code host, you may want to designate this authentication provider as the identity provider for the code host.
 	ConfigID    string `json:"configID,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
-	// IdentityProviderMetadata description: The SAML Identity Provider metadata XML contents (for static configuration of the SAML Service Provider). The value of this field should be an XML document whose root element is `<EntityDescriptor>` or `<EntityDescriptors>`.
+	// IdentityProviderMetadata description: The SAML Identity Provider metadata XML contents (for static configuration of the SAML Service Provider). The value of this field should be an XML document whose root element is `<EntityDescriptor>` or `<EntityDescriptors>`. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	IdentityProviderMetadata string `json:"identityProviderMetadata,omitempty"`
 	// IdentityProviderMetadataURL description: The SAML Identity Provider metadata URL (for dynamic configuration of the SAML Service Provider).
 	IdentityProviderMetadataURL string `json:"identityProviderMetadataURL,omitempty"`
@@ -757,11 +713,11 @@ type SAMLAuthProvider struct {
 	InsecureSkipAssertionSignatureValidation bool `json:"insecureSkipAssertionSignatureValidation,omitempty"`
 	// NameIDFormat description: The SAML NameID format to use when performing user authentication.
 	NameIDFormat string `json:"nameIDFormat,omitempty"`
-	// ServiceProviderCertificate description: The SAML Service Provider certificate in X.509 encoding (begins with "-----BEGIN CERTIFICATE-----"). This certificate is used by the Identity Provider to validate the Service Provider's AuthnRequests and LogoutRequests. It corresponds to the Service Provider's private key (`serviceProviderPrivateKey`).
+	// ServiceProviderCertificate description: The SAML Service Provider certificate in X.509 encoding (begins with "-----BEGIN CERTIFICATE-----"). This certificate is used by the Identity Provider to validate the Service Provider's AuthnRequests and LogoutRequests. It corresponds to the Service Provider's private key (`serviceProviderPrivateKey`). To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	ServiceProviderCertificate string `json:"serviceProviderCertificate,omitempty"`
 	// ServiceProviderIssuer description: The SAML Service Provider name, used to identify this Service Provider. This is required if the "externalURL" field is not set (as the SAML metadata endpoint is computed as "<externalURL>.auth/saml/metadata"), or when using multiple SAML authentication providers.
 	ServiceProviderIssuer string `json:"serviceProviderIssuer,omitempty"`
-	// ServiceProviderPrivateKey description: The SAML Service Provider private key in PKCS#8 encoding (begins with "-----BEGIN PRIVATE KEY-----"). This private key is used to sign AuthnRequests and LogoutRequests. It corresponds to the Service Provider's certificate (`serviceProviderCertificate`).
+	// ServiceProviderPrivateKey description: The SAML Service Provider private key in PKCS#8 encoding (begins with "-----BEGIN PRIVATE KEY-----"). This private key is used to sign AuthnRequests and LogoutRequests. It corresponds to the Service Provider's certificate (`serviceProviderCertificate`). To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
 	ServiceProviderPrivateKey string `json:"serviceProviderPrivateKey,omitempty"`
 	// SignRequests description: Sign AuthnRequests and LogoutRequests sent to the Identity Provider using the Service Provider's private key (`serviceProviderPrivateKey`). It defaults to true if the `serviceProviderPrivateKey` and `serviceProviderCertificate` are set, and false otherwise.
 	SignRequests *bool  `json:"signRequests,omitempty"`
@@ -822,6 +778,8 @@ type Settings struct {
 	AlertsShowPatchUpdates bool `json:"alerts.showPatchUpdates,omitempty"`
 	// CodeHostUseNativeTooltips description: Whether to use the code host's native hover tooltips when they exist (GitHub's jump-to-definition tooltips, for example).
 	CodeHostUseNativeTooltips bool `json:"codeHost.useNativeTooltips,omitempty"`
+	// ExperimentalFeatures description: Experimental features to enable or disable. Features that are now enabled by default are marked as deprecated.
+	ExperimentalFeatures *SettingsExperimentalFeatures `json:"experimentalFeatures,omitempty"`
 	// Extensions description: The Sourcegraph extensions to use. Enable an extension by adding a property `"my/extension": true` (where `my/extension` is the extension ID). Override a previously enabled extension and disable it by setting its value to `false`.
 	Extensions map[string]bool `json:"extensions,omitempty"`
 	// Motd description: DEPRECATED: Use `notices` instead.
@@ -852,17 +810,45 @@ type Settings struct {
 	SearchScopes []*SearchScope `json:"search.scopes,omitempty"`
 }
 
+// SettingsExperimentalFeatures description: Experimental features to enable or disable. Features that are now enabled by default are marked as deprecated.
+type SettingsExperimentalFeatures struct {
+	// SearchStats description: Enables a new page that shows language statistics about the results for a search query.
+	SearchStats *bool `json:"searchStats,omitempty"`
+	// SplitSearchModes description: Enables toggling between the current omni search mode, and experimental interactive search mode.
+	SplitSearchModes *bool `json:"splitSearchModes,omitempty"`
+}
+
 // SiteConfiguration description: Configuration for a Sourcegraph site.
 type SiteConfiguration struct {
 	// AuthAccessTokens description: Settings for access tokens, which enable external tools to access the Sourcegraph API with the privileges of the user.
 	AuthAccessTokens *AuthAccessTokens `json:"auth.accessTokens,omitempty"`
+	// AuthEnableUsernameChanges description: Enables users to change their username after account creation. Warning: setting this to be true has security implications if you have enabled (or will at any point in the future enable) repository permissions with an option that relies on username equivalency between Sourcegraph and an external service or authentication provider. Do NOT set this to true if you are using non-built-in authentication OR rely on username equivalency for repository permissions.
+	AuthEnableUsernameChanges bool `json:"auth.enableUsernameChanges,omitempty"`
+	// AuthProviders description: The authentication providers to use for identifying and signing in users. See instructions below for configuring SAML, OpenID Connect (including G Suite), and HTTP authentication proxies. Multiple authentication providers are supported (by specifying multiple elements in this array).
+	AuthProviders []AuthProviders `json:"auth.providers,omitempty"`
+	// AuthPublic description: WARNING: This option has been removed as of 3.8.
+	AuthPublic bool `json:"auth.public,omitempty"`
+	// AuthSessionExpiry description: The duration of a user session, after which it expires and the user is required to re-authenticate. The default is 90 days. There is typically no need to set this, but some users may have specific internal security requirements.
+	//
+	// The string format is that of the Duration type in the Go time package (https://golang.org/pkg/time/#ParseDuration). E.g., "720h", "43200m", "2592000s" all indicate a timespan of 30 days.
+	//
+	// Note: changing this field does not affect the expiration of existing sessions. If you would like to enforce this limit for existing sessions, you must log out currently signed-in users. You can force this by removing all keys beginning with "session_" from the Redis store:
+	//
+	// * For deployments using `sourcegraph/server`: `docker exec $CONTAINER_ID redis-cli --raw keys 'session_*' | xargs docker exec $CONTAINER_ID redis-cli del`
+	// * For cluster deployments:
+	//   ```
+	//   REDIS_POD="$(kubectl get pods -l app=redis-store -o jsonpath={.items[0].metadata.name})";
+	//   kubectl exec "$REDIS_POD" -- redis-cli --raw keys 'session_*' | xargs kubectl exec "$REDIS_POD" -- redis-cli --raw del;
+	//   ```
+	//
+	AuthSessionExpiry string `json:"auth.sessionExpiry,omitempty"`
+	// AuthUserOrgMap description: Ensure that matching users are members of the specified orgs (auto-joining users to the orgs if they are not already a member). Provide a JSON object of the form `{"*": ["org1", "org2"]}`, where org1 and org2 are orgs that all users are automatically joined to. Currently the only supported key is `"*"`.
+	AuthUserOrgMap map[string][]string `json:"auth.userOrgMap,omitempty"`
 	// Branding description: Customize Sourcegraph homepage logo and search icon.
 	//
 	// Only available in Sourcegraph Enterprise.
 	Branding *Branding `json:"branding,omitempty"`
-	// CorsOrigin description: Only required when using the Phabricator integration or Bitbucket Server plugin. This value is the space-separated list of allowed origins for cross-origin HTTP requests to Sourcegraph. Usually it contains the base URL for your Phabricator or Bitbucket Server instance.
-	//
-	// Previously, this value was also used for the GitHub, GitLab, etc., integrations using the browser extension. It is no longer necessary for those. You may remove this setting if you are not using the Phabricator integration or Bitbucket Server plugin. eg "https://my-phabricator.example.com https://my-bitbucket.example.com"
+	// CorsOrigin description: Required when using any of the native code host integrations for Phabricator, GitLab, or Bitbucket Server. It is a space-separated list of allowed origins for cross-origin HTTP requests which should be the base URL for your Phabricator, GitLab, or Bitbucket Server instance.
 	CorsOrigin string `json:"corsOrigin,omitempty"`
 	// DebugSearchSymbolsParallelism description: (debug) controls the amount of symbol search parallelism. Defaults to 20. It is not recommended to change this outside of debugging scenarios. This option will be removed in a future version.
 	DebugSearchSymbolsParallelism int `json:"debug.search.symbolsParallelism,omitempty"`
@@ -886,6 +872,8 @@ type SiteConfiguration struct {
 	ExperimentalFeatures *ExperimentalFeatures `json:"experimentalFeatures,omitempty"`
 	// Extensions description: Configures Sourcegraph extensions.
 	Extensions *Extensions `json:"extensions,omitempty"`
+	// ExternalURL description: The externally accessible URL for Sourcegraph (i.e., what you type into your browser). Previously called `appURL`.
+	ExternalURL string `json:"externalURL,omitempty"`
 	// GitCloneURLToRepositoryName description: JSON array of configuration that maps from Git clone URL to repository name. Sourcegraph automatically resolves remote clone URLs to their proper code host. However, there may be non-remote clone URLs (e.g., in submodule declarations) that Sourcegraph cannot automatically map to a code host. In this case, use this field to specify the mapping. The mappings are tried in the order they are specified and take precedence over automatic mappings.
 	GitCloneURLToRepositoryName []*CloneURLToRepositoryName `json:"git.cloneURLToRepositoryName,omitempty"`
 	// GitMaxConcurrentClones description: Maximum number of git clone processes that will be run concurrently to update repositories.
@@ -894,12 +882,30 @@ type SiteConfiguration struct {
 	GithubClientID string `json:"githubClientID,omitempty"`
 	// GithubClientSecret description: Client secret for GitHub.
 	GithubClientSecret string `json:"githubClientSecret,omitempty"`
+	// HtmlBodyBottom description: HTML to inject at the bottom of the `<body>` element on each page, for analytics scripts
+	HtmlBodyBottom string `json:"htmlBodyBottom,omitempty"`
+	// HtmlBodyTop description: HTML to inject at the top of the `<body>` element on each page, for analytics scripts
+	HtmlBodyTop string `json:"htmlBodyTop,omitempty"`
+	// HtmlHeadBottom description: HTML to inject at the bottom of the `<head>` element on each page, for analytics scripts
+	HtmlHeadBottom string `json:"htmlHeadBottom,omitempty"`
+	// HtmlHeadTop description: HTML to inject at the top of the `<head>` element on each page, for analytics scripts
+	HtmlHeadTop string `json:"htmlHeadTop,omitempty"`
+	// LicenseKey description: The license key associated with a Sourcegraph product subscription, which is necessary to activate Sourcegraph Enterprise functionality. To obtain this value, contact Sourcegraph to purchase a subscription. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.
+	LicenseKey string `json:"licenseKey,omitempty"`
+	// LightstepAccessToken description: Access token for sending traces to LightStep.
+	LightstepAccessToken string `json:"lightstepAccessToken,omitempty"`
+	// LightstepProject description: The project ID on LightStep that corresponds to the `lightstepAccessToken`, only for generating links to traces. For example, if `lightstepProject` is `mycompany-prod`, all HTTP responses from Sourcegraph will include an X-Trace header with the URL to the trace on LightStep, of the form `https://app.lightstep.com/mycompany-prod/trace?span_guid=...&at_micros=...`.
+	LightstepProject string `json:"lightstepProject,omitempty"`
+	// Log description: Configuration for logging and alerting, including to external services.
+	Log *Log `json:"log,omitempty"`
 	// LsifEnforceAuth description: Whether or not LSIF uploads will be blocked unless a valid LSIF upload token is provided.
 	LsifEnforceAuth bool `json:"lsifEnforceAuth,omitempty"`
 	// MaxReposToSearch description: The maximum number of repositories to search across. The user is prompted to narrow their query if exceeded. Any value less than or equal to zero means unlimited.
 	MaxReposToSearch int `json:"maxReposToSearch,omitempty"`
 	// ParentSourcegraph description: URL to fetch unreachable repository details from. Defaults to "https://sourcegraph.com"
 	ParentSourcegraph *ParentSourcegraph `json:"parentSourcegraph,omitempty"`
+	// PermissionsUserMapping description: Settings for Sourcegraph permissions, which allow the site admin to explicitly manage repository permissions via the GraphQL API. This setting cannot be enabled if repository permissions for any specific external service are enabled (i.e., when the external service's `authorization` field is set).
+	PermissionsUserMapping *PermissionsUserMapping `json:"permissions.userMapping,omitempty"`
 	// RepoListUpdateInterval description: Interval (in minutes) for checking code hosts (such as GitHub, Gitolite, etc.) for new repositories.
 	RepoListUpdateInterval int `json:"repoListUpdateInterval,omitempty"`
 	// SearchIndexEnabled description: Whether indexed search is enabled. If unset Sourcegraph detects the environment to decide if indexed search is enabled. Indexed search is RAM heavy, and is disabled by default in the single docker image. All other environments will have it enabled by default. The size of all your repository working copies is the amount of additional RAM required.
@@ -908,6 +914,22 @@ type SiteConfiguration struct {
 	SearchIndexSymbolsEnabled *bool `json:"search.index.symbols.enabled,omitempty"`
 	// SearchLargeFiles description: A list of file glob patterns where matching files will be indexed and searched regardless of their size. The glob pattern syntax can be found here: https://golang.org/pkg/path/filepath/#Match.
 	SearchLargeFiles []string `json:"search.largeFiles,omitempty"`
+	// UpdateChannel description: The channel on which to automatically check for Sourcegraph updates.
+	UpdateChannel string `json:"update.channel,omitempty"`
+	// UseJaeger description: Use local Jaeger instance for tracing. Kubernetes cluster deployments only.
+	//
+	// After enabling Jaeger and updating your Kubernetes cluster, `kubectl get pods`
+	// should display pods prefixed with `jaeger-cassandra`,
+	// `jaeger-collector`, and `jaeger-query`. `jaeger-collector` will start
+	// crashing until you initialize the Cassandra DB. To do so, do the
+	// following:
+	//
+	// 1. Install [`cqlsh`](https://pypi.python.org/pypi/cqlsh).
+	// 1. `kubectl port-forward $(kubectl get pods | grep jaeger-cassandra | awk '{ print $1 }') 9042`
+	// 1. `git clone https://github.com/uber/jaeger && cd jaeger && MODE=test ./plugin/storage/cassandra/schema/create.sh | cqlsh`
+	// 1. `kubectl port-forward $(kubectl get pods | grep jaeger-query | awk '{ print $1 }') 16686`
+	// 1. Go to http://localhost:16686 to view the Jaeger dashboard.
+	UseJaeger bool `json:"useJaeger,omitempty"`
 }
 type UsernameIdentity struct {
 	Type string `json:"type"`
