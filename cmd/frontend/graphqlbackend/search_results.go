@@ -532,7 +532,7 @@ func (r *searchResolver) resultsWithTimeoutSuggestion(ctx context.Context) (*Sea
 				proposedQueries: []*searchQueryDescription{
 					{
 						description: "query with longer timeout",
-						query:       fmt.Sprintf("timeout:%v %s", dt2, omitQueryFields(r, query.FieldTimeout)),
+						query:       fmt.Sprintf("timeout:%v %s", dt2, omitQueryFields(r.query, query.FieldTimeout)),
 					},
 				},
 			},
@@ -927,7 +927,7 @@ func (r *searchResolver) determineRepos(ctx context.Context, tr *trace.Trace, st
 
 	tr.LazyPrintf("searching %d repos, %d missing", len(repos), len(missingRepoRevs))
 	if len(repos) == 0 {
-		alert, err := r.alertForNoResolvedRepos(ctx)
+		alert, err := alertForNoResolvedRepos(ctx, r.query, r.patternType)
 		if err != nil {
 			return nil, nil, nil, err
 		}

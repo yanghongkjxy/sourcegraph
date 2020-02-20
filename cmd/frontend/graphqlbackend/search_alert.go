@@ -74,51 +74,61 @@ func alertForQuotesInQueryInLiteralMode(query *query.Query) *searchAlert {
 	}
 }
 
-func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAlert, error) {
-	repoFilters, minusRepoFilters := r.query.RegexpPatterns(query.FieldRepo)
-	repoGroupFilters, _ := r.query.StringValues(query.FieldRepoGroup)
-	fork, _ := r.query.StringValue(query.FieldFork)
-	onlyForks, noForks := fork == "only", fork == "no"
+func alertForEmptyRepoFilters(patternType query.SearchType) *searchAlert {
+	return &searchAlert{
+		prometheusType: "no_resolved_repos__no_repositories",
+		title:          "Add repositories or connect repository hosts",
+		description:    "There are no repositories to search. Add an external service connection to your code host.",
+		patternType:    patternType,
+	}
+}
 
-	// Handle repogroup-only scenarios.
+func alertForEmptyRepoGroupFilters(patternType query.SearchType, repoGroupFilters []string) *searchAlert {
+	return &searchAlert{
+		prometheusType: "no_resolved_repos__repogroup_empty",
+		title:          fmt.Sprintf("Add repositories to repogroup:%s to see results", repoGroupFilters[0]),
+		description:    fmt.Sprintf("The repository group %q is empty. See the documentation for configuration and troubleshooting.", repoGroupFilters[0]),
+		patternType:    patternType,
+	}
+}
+
+func alertForNoResolvedRepoGroupFilters(patternType query.SearchType) *searchAlert {
+	return &searchAlert{
+		prometheusType: "no_resolved_repos__repogroup_none_in_common",
+		title:          "Repository groups have no repositories in common",
+		description:    "No repository exists in all of the specified repository groups.",
+		patternType:    patternType,
+	}
+}
+
+func alertForNoResolvedRepos(ctx context.Context, q *query.Query, patternType query.SearchType) (*searchAlert, error) {
+	repoFilters, minusRepoFilters := q.RegexpPatterns(query.FieldRepo)
+	repoGroupFilters, _ := q.StringValues(query.FieldRepoGroup)
+
 	if len(repoFilters) == 0 && len(repoGroupFilters) == 0 {
-		return &searchAlert{
-			prometheusType: "no_resolved_repos__no_repositories",
-			title:          "Add repositories or connect repository hosts",
-			description:    "There are no repositories to search. Add an external service connection to your code host.",
-			patternType:    r.patternType,
-		}, nil
+		return alertForEmptyRepoFilters(patternType), nil
 	}
 	if len(repoFilters) == 0 && len(repoGroupFilters) == 1 {
-		return &searchAlert{
-			prometheusType: "no_resolved_repos__repogroup_empty",
-			title:          fmt.Sprintf("Add repositories to repogroup:%s to see results", repoGroupFilters[0]),
-			description:    fmt.Sprintf("The repository group %q is empty. See the documentation for configuration and troubleshooting.", repoGroupFilters[0]),
-			patternType:    r.patternType,
-		}, nil
+		return alertForEmptyRepoGroupFilters(patternType, repoGroupFilters), nil
 	}
 	if len(repoFilters) == 0 && len(repoGroupFilters) > 1 {
-		return &searchAlert{
-			prometheusType: "no_resolved_repos__repogroup_none_in_common",
-			title:          "Repository groups have no repositories in common",
-			description:    "No repository exists in all of the specified repository groups.",
-			patternType:    r.patternType,
-		}, nil
+		return alertForNoResolvedRepoGroupFilters(patternType), nil
 	}
 
 	// TODO(sqs): handle -repo:foo fields.
+	withoutRepoFields := omitQueryFields(q, query.FieldRepo)
 
-	withoutRepoFields := omitQueryFields(r, query.FieldRepo)
-
+	fork, _ := q.StringValue(query.FieldFork)
+	onlyForks, noForks := fork == "only", fork == "no"
 	var a searchAlert
-	a.patternType = r.patternType
+	a.patternType = patternType
 	switch {
 	case len(repoGroupFilters) > 1:
 		// This is a rare case, so don't bother proposing queries.
 		a.title = "Expand your repository filters to see results"
 		a.description = fmt.Sprintf("No repository exists in all specified groups and satisfies all of your repo: filters.")
 
-	case len(repoGroupFilters) == 1 && len(repoFilters) > 1:
+	case len(repoFilters) > 1 && len(repoGroupFilters) == 1:
 		a.title = "Expand your repository filters to see results"
 		a.description = fmt.Sprintf("No repositories in repogroup:%s satisfied all of your repo: filters.", repoGroupFilters[0])
 
@@ -129,7 +139,7 @@ func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAl
 		if len(repos1) > 0 {
 			a.proposedQueries = append(a.proposedQueries, &searchQueryDescription{
 				description: fmt.Sprintf("include repositories outside of repogroup:%s", repoGroupFilters[0]),
-				query:       omitQueryFields(r, query.FieldRepoGroup),
+				query:       omitQueryFields(q, query.FieldRepoGroup),
 			})
 		}
 
@@ -153,7 +163,7 @@ func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAl
 			})
 		}
 
-	case len(repoGroupFilters) == 1 && len(repoFilters) == 1:
+	case len(repoFilters) == 1 && len(repoGroupFilters) == 1:
 		a.title = "Expand your repository filters to see results"
 		a.description = fmt.Sprintf("No repositories in repogroup:%s satisfied your repo: filter.", repoGroupFilters[0])
 
@@ -164,7 +174,7 @@ func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAl
 		if len(repos1) > 0 {
 			a.proposedQueries = append(a.proposedQueries, &searchQueryDescription{
 				description: fmt.Sprintf("include repositories outside of repogroup:%s", repoGroupFilters[0]),
-				query:       omitQueryFields(r, query.FieldRepoGroup),
+				query:       omitQueryFields(q, query.FieldRepoGroup),
 			})
 		}
 
@@ -173,7 +183,7 @@ func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAl
 			query:       withoutRepoFields,
 		})
 
-	case len(repoGroupFilters) == 0 && len(repoFilters) > 1:
+	case len(repoFilters) > 1 && len(repoGroupFilters) == 0:
 		a.title = "Expand your repo: filters to see results"
 		a.description = fmt.Sprintf("No repositories satisfied all of your repo: filters.")
 
@@ -196,7 +206,7 @@ func (r *searchResolver) alertForNoResolvedRepos(ctx context.Context) (*searchAl
 			query:       withoutRepoFields,
 		})
 
-	case len(repoGroupFilters) == 0 && len(repoFilters) == 1:
+	case len(repoFilters) == 1 && len(repoGroupFilters) == 0:
 		isSiteAdmin := backend.CheckCurrentUserIsSiteAdmin(ctx) == nil
 		proposeQueries := true
 		if !envvar.SourcegraphDotComMode() {
@@ -358,8 +368,8 @@ func alertForMissingRepoRevs(patternType query.SearchType, missingRepoRevs []*se
 	}
 }
 
-func omitQueryFields(r *searchResolver, field string) string {
-	return syntax.ExprString(omitQueryExprWithField(r.query, field))
+func omitQueryFields(query *query.Query, field string) string {
+	return syntax.ExprString(omitQueryExprWithField(query, field))
 }
 
 func omitQueryExprWithField(query *query.Query, field string) syntax.ParseTree {
