@@ -5370,10 +5370,15 @@ typescript-json-schema@^0.42.0:
     typescript "^3.5.3"
     yargs "^14.0.0"
 
-typescript@^3.5.3, typescript@^3.7.2:
+typescript@^3.5.3:
   version "3.7.2"
   resolved "https://registry.npmjs.org/typescript/-/typescript-3.7.2.tgz#27e489b95fa5909445e9fef5ee48d81697ad18fb"
   integrity sha512-ml7V7JfiN2Xwvcer+XAf2csGO1bPBdRbFCkYBczNZggrBZ9c7G3riSUeJmqEU5uOtXNPMhE3n+R4FA/3YOAWOQ==
+
+typescript@^3.9.0-dev.20200229:
+  version "3.9.0-dev.20200229"
+  resolved "https://registry.npmjs.org/typescript/-/typescript-3.9.0-dev.20200229.tgz#45f0821d5c420a4c7d6d894c64531e1301dfa9bd"
+  integrity sha512-DtSLzxoiUir0qRc3+JJBxiAe6NvTEM3uDxnPxVWJU6sRDhUi8Ssx6DBjGWCZAQJlLk5A+jk2ptf3JvvZrQlLNQ==
 
 union-value@^1.0.0:
   version "1.0.1"
