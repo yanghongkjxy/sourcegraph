@@ -27,7 +27,8 @@ func (Operator) node()  {}
 
 // Parameter is a leaf node of expressions.
 type Parameter struct {
-	Value string
+	Field string `json:"field"`
+	Value string `json:"value"`
 }
 
 type operatorKind int
@@ -44,7 +45,11 @@ type Operator struct {
 }
 
 func (node Parameter) String() string {
-	return node.Value
+	if node.Field == "" {
+		return node.Value
+	} else {
+		return fmt.Sprintf("%s:%s", node.Field, node.Value)
+	}
 }
 
 func (node Operator) String() string {
@@ -142,10 +147,48 @@ func (p *parser) skipSpaces() error {
 	return nil
 }
 
+// Want: colons to be escapable so that we can use them in patterns. Must be recognized here.
+// Implication: must detect \\ as well.
+// Should not: interpret colon if we see quotes.
+// Remember: '-' is legal.
+// TODO: Must consume, for if we detect a pattern \\ or \:, we should return \ and : resp.
+func scanField(input []byte) int {
+	for i, b := range input {
+		// If it starts with a colon, reject it.
+		if b == ':' && i == 0 {
+			return 0
+		}
+		// If it starts with quotes, reject it.
+		if b == '\'' || b == '"' && i == 0 {
+			return 0
+		}
+		if b == ':' && i > 0 && input[i-1] != '\\' {
+			return i
+		}
+	}
+	return 0
+}
+
 // scanParameter scans for leaf node values.
-func (p *parser) scanParameter() (string, error) {
+// A parameter in the parse tree is a contiguous sequence characters, where the
+// following three forms are distinguished:
+// (1) a string of syntax <string1>:<string2> for nonempty string1, where : matches the first encountered colon
+// (2) <string>
+// (3) :<string>
+//
+// When a parameter is of form (1), the string corresponds to Field:Value in Parameter.
+// When of form (2), Value corresponds to <string> and Field is the empty string.
+// When of form (3), Value corresponds to :<string>, including the colon, and Field is the empty string.
+//
+// There is no restriction on values that <string> may take on, except that
+// (1) colons, single and double quotes, and backslash must be escaped if they should be interpretted literally, e.g., as part of a pattern.
+// (2) quoted strings may only occur at the start of a field or value string, and must be balanced. Quoted strings must be well-formed in the usual sense.
+func (p *parser) ScanParameter() (Parameter, error) {
 	start := p.pos
 	for {
+		if p.expect(`\ `) || p.expect(`\(`) || p.expect(`\)`) {
+			continue
+		}
 		if p.isKeyword() {
 			break
 		}
@@ -157,7 +200,15 @@ func (p *parser) scanParameter() (string, error) {
 		}
 		p.pos++
 	}
-	return string(p.buf[start:p.pos]), nil
+	parameter := p.buf[start:p.pos]
+	fieldLength := scanField(parameter)
+	field := parameter[:fieldLength]
+	value := parameter[fieldLength:]
+	if fieldLength > 0 {
+		// A colon was matched, and it wasn't the first character. Strip it from value.
+		value = value[1:]
+	}
+	return Parameter{Field: string(field), Value: string(value)}, nil
 }
 
 // scanParameterList scans for consecutive leaf nodes.
@@ -184,18 +235,20 @@ func (p *parser) parseParameterList() ([]Node, error) {
 				// Return a non-nil node if we parsed "()".
 				return []Node{Parameter{Value: ""}}, nil
 			}
-			return nodes, nil
+			goto Done
 		case p.match(AND), p.match(OR):
 			// Caller advances.
-			return nodes, nil
+			goto Done
 		default:
-			value, err := p.scanParameter()
+			parameter, err := p.ScanParameter()
 			if err != nil {
 				return nil, err
 			}
-			nodes = append(nodes, Parameter{Value: value})
+			nodes = append(nodes, parameter)
 		}
 	}
+Done:
+	// coalesce pattern nodes here
 	return nodes, nil
 }
 

@@ -1,11 +1,72 @@
 package search
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+func Test_ScanParameter(t *testing.T) {
+	cases := []struct {
+		Name  string
+		Input string
+		Want  string
+	}{
+		{
+			Name:  "Escaped whitespace",
+			Input: `a\ pattern`,
+			Want:  `{"field":"","value":"a\\ pattern"}`,
+		},
+		{
+			Name:  "Normal field:value",
+			Input: `field:value`,
+			Want:  `{"field":"field","value":"value"}`,
+		},
+		{
+			Name:  "First char is colon",
+			Input: `:value`,
+			Want:  `{"field":"","value":":value"}`,
+		},
+		{
+			Name:  "Last char is colon",
+			Input: `field:`,
+			Want:  `{"field":"field","value":""}`,
+		},
+		{
+			Name:  "Match first colon",
+			Input: `field:value:value`,
+			Want:  `{"field":"field","value":"value:value"}`,
+		},
+		{
+			Name:  "TODO: Escaped colon in field:value is just value",
+			Input: `field\:value`,
+			Want:  `{"field":"","value":"field\\:value"}`,
+		},
+		{
+			Name:  "TODO: Recognize escaped colon in field of field:value",
+			Input: `fi\:eld:value`,
+			Want:  `{"field":"fi\\:eld","value":"value"}`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.Name, func(t *testing.T) {
+			parser := &parser{buf: []byte(tt.Input)}
+			result, err := parser.ScanParameter()
+			got, _ := json.Marshal(result)
+			if err != nil {
+				if diff := cmp.Diff(tt.Want, err.Error()); diff != "" {
+					t.Fatal(diff)
+				}
+				return
+			}
+			if diff := cmp.Diff(tt.Want, string(got)); diff != "" {
+				t.Error(diff)
+			}
+		})
+	}
+}
 
 func Test_Parse(t *testing.T) {
 	cases := []struct {
